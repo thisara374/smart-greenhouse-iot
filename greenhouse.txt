@@ -1,0 +1,203 @@
+#include <WiFi.h>
+#include "DHT.h"
+
+// ----------- WiFi -----------
+const char* ssid = "Galaxy A06 4729";
+const char* password = "t9dgdph55254yxv";
+
+WiFiServer server(80);
+
+// ----------- DHT -----------
+#define DHTPIN 4
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+// ----------- LEDs -----------
+#define COOL_LED 23
+#define HEAT_LED 22
+#define MOIST_LED 21
+#define LIGHT_LED 18
+
+// ----------- Sensors -----------
+#define MOISTURE 34
+#define LDR_PIN 35
+
+// ----------- States -----------
+bool coolState = false;
+bool heatState = false;
+bool pumpState = false;
+bool lightState = false;
+
+// Manual override
+bool manualCool = false;
+bool manualHeat = false;
+bool manualPump = false;
+bool manualLight = false;
+
+// ----------- LDR Average -----------
+int readLDR() {
+  int total = 0;
+  for (int i = 0; i < 10; i++) {
+    total += analogRead(LDR_PIN);
+    delay(10);
+  }
+  return total / 10;
+}
+
+// ----------- Moisture Average -----------
+int readMoisture() {
+  int total = 0;
+  for (int i = 0; i < 10; i++) {
+    total += analogRead(MOISTURE);
+    delay(10);
+  }
+  return total / 10;
+}
+
+// ----------- SETUP -----------
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  pinMode(COOL_LED, OUTPUT);
+  pinMode(HEAT_LED, OUTPUT);
+  pinMode(MOIST_LED, OUTPUT);
+  pinMode(LIGHT_LED, OUTPUT);
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+}
+
+// ----------- LOOP -----------
+void loop() {
+
+  float temp = dht.readTemperature();
+  int moisture = readMoisture();
+  int light = readLDR();
+
+  // -------- Cooling --------
+  if (!manualCool) {
+    if (temp > 30) coolState = true;
+    else if (temp <= 28) coolState = false;
+  }
+
+  // -------- Heating --------
+  if (!manualHeat) {
+    if (temp < 20) heatState = true;
+    else if (temp >= 22) heatState = false;
+  }
+
+  // -------- Pump --------
+  if (!manualPump) {
+    if (moisture > 1000) pumpState = false;
+    else if (moisture < 800) pumpState = true;
+  }
+
+  // -------- Light (FIXED with hysteresis) --------
+  if (!manualLight) {
+    if (light < 100) {
+      lightState = true;   // ON
+    }
+    else if (light > 800) {
+      lightState = false;  // OFF
+    }
+  }
+
+  digitalWrite(COOL_LED, coolState);
+  digitalWrite(HEAT_LED, heatState);
+  digitalWrite(MOIST_LED, pumpState);
+  digitalWrite(LIGHT_LED, lightState);
+
+  // -------- DEBUG PRINT --------
+  Serial.println("------ SENSOR DATA ------");
+  Serial.print("Temp: "); Serial.println(temp);
+  Serial.print("Moisture: "); Serial.println(moisture);
+  Serial.print("Light: "); Serial.println(light);
+  Serial.println("------------------------");
+
+  // -------- Web Server --------
+  WiFiClient client = server.available();
+
+  if (client) {
+    String request = client.readStringUntil('\r');
+    client.flush();
+
+    // -------- Button Handling --------
+    if (request.indexOf("/cool/on") != -1) { coolState = true; manualCool = true; }
+    if (request.indexOf("/cool/off") != -1) { coolState = false; manualCool = true; }
+
+    if (request.indexOf("/heat/on") != -1) { heatState = true; manualHeat = true; }
+    if (request.indexOf("/heat/off") != -1) { heatState = false; manualHeat = true; }
+
+    if (request.indexOf("/pump/on") != -1) { pumpState = true; manualPump = true; }
+    if (request.indexOf("/pump/off") != -1) { pumpState = false; manualPump = true; }
+
+    if (request.indexOf("/light/on") != -1) { lightState = true; manualLight = true; }
+    if (request.indexOf("/light/off") != -1) { lightState = false; manualLight = true; }
+
+    if (request.indexOf("/auto") != -1) {
+      manualCool = manualHeat = manualPump = manualLight = false;
+    }
+
+    // -------- Web Page --------
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-type:text/html");
+    client.println();
+
+    client.println("<html><head>");
+    client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+    client.println("<meta http-equiv='refresh' content='3'>");
+
+    client.println("<style>");
+    client.println("body { font-family: Arial; text-align:center; background:#f0f8ff; }");
+    client.println(".card { background:white; padding:15px; margin:10px; border-radius:10px; box-shadow:2px 2px 10px gray; }");
+    client.println("button { padding:10px 20px; margin:5px; }");
+    client.println("</style>");
+
+    client.println("</head><body>");
+
+    client.println("<h1>🌿 Smart Greenhouse</h1>");
+
+    client.println("<div class='card'>");
+    client.println("<p>Temp: " + String(temp) + "</p>");
+    client.println("<p>Moisture: " + String(moisture) + "</p>");
+    client.println("<p>Light: " + String(light) + "</p>");
+    client.println("</div>");
+
+    client.println("<div class='card'>");
+
+    client.println("<p>Cooling: " + String(coolState ? "ON" : "OFF") + "</p>");
+    client.println("<a href='/cool/on'><button>ON</button></a>");
+    client.println("<a href='/cool/off'><button>OFF</button></a>");
+
+    client.println("<p>Heating: " + String(heatState ? "ON" : "OFF") + "</p>");
+    client.println("<a href='/heat/on'><button>ON</button></a>");
+    client.println("<a href='/heat/off'><button>OFF</button></a>");
+
+    client.println("<p>Pump: " + String(pumpState ? "ON" : "OFF") + "</p>");
+    client.println("<a href='/pump/on'><button>ON</button></a>");
+    client.println("<a href='/pump/off'><button>OFF</button></a>");
+
+    client.println("<p>Light: " + String(lightState ? "ON" : "OFF") + "</p>");
+    client.println("<a href='/light/on'><button>ON</button></a>");
+    client.println("<a href='/light/off'><button>OFF</button></a>");
+
+    client.println("<br><a href='/auto'><button>AUTO</button></a>");
+
+    client.println("</div>");
+
+    client.println("</body></html>");
+
+    client.stop();
+  }
+}
